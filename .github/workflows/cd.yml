@@ -1,0 +1,46 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+   
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Build Docker image
+        
+        run: docker build -t thanhhien52/cd_docker_project:v1 . 
+
+      - name: Log in to Docker Hub 
+        run: echo '${{ secrets.DOCKER_PASSWORD }}' | docker login -u '${{ secrets.DOCKER_USERNAME }}' --password-stdin
+
+      - name: Push Docker image to Docker Hub 
+        run: docker push thanhhien52/cd_docker_project:v1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Server via SSH 
+        uses: appleboy/ssh-action@master 
+        with:
+          host: '${{ secrets.SERVER_IP }}'
+          username: '${{ secrets.SERVER_USER }}'
+          
+          key: '${{ secrets.SSH_PRIVATE_KEY }}' 
+          script: |
+            echo "Connecting to server..." # Thêm log để dễ theo dõi
+            cd /home/ubuntu # Di chuyển tới thư mục chứa docker-compose.yml
+            echo "Pulling latest image..."
+            docker-compose pull # Kéo image mới nhất từ Docker Hub [11]
+            echo "Stopping old container (if running)..."
+            docker-compose down # Dừng và xóa container cũ [4]
+            echo "Starting new container..."
+            docker-compose up -d # Khởi chạy container mới ở chế độ nền [2, 4, 12]
+            echo "Deployment complete!"
