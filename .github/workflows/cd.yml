@@ -5,14 +5,20 @@ on:
     branches:
       - main
 
+# Cấp quyền cần thiết cho OIDC token
+permissions:
+  id-token: write   # Bắt buộc để lấy OIDC JWT token
+  contents: read    # Thường cần để checkout code
+
 jobs:
-  build:
+  build: # Job build Docker image giữ nguyên như cũ
     runs-on: ubuntu-latest
-   
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 
       
+        
       - name: Build Docker image
         
         run: docker build -t thanhhien52/cd_docker_project:v1 . 
@@ -27,20 +33,46 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to Server via SSH 
-        uses: appleboy/ssh-action@master 
+   
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4 
         with:
-          host: '${{ secrets.SERVER_IP }}'
-          username: '${{ secrets.SERVER_USER }}'
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }} 
+          aws-region: ${{ secrets.AWS_REGION }}           # Khu vực AWS
+
+      
+      - name: Deploy application via SSM Send-Command
+        run: |
+          echo "Sending deployment commands to instance ${{ secrets.EC2_INSTANCE_ID }} via SSM..."
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploying cd_docker_project via GitHub Actions OIDC/SSM" \
+            --parameters 'commands=[
+              "cd /home/ubuntu",
+              "echo ''Pulling latest Docker image...''",
+              "docker-compose pull",
+              "echo ''Stopping old container (if running)...''",
+              "docker-compose down",
+              "echo ''Starting new container...''",
+              "docker-compose up -d",
+              "echo ''Deployment commands sent.''"
+              ]' \
+            --query "Command.CommandId" --output text)
           
-          key: '${{ secrets.SSH_PRIVATE_KEY }}' 
-          script: |
-            echo "Connecting to server..." # Thêm log để dễ theo dõi
-            cd /home/ubuntu # Di chuyển tới thư mục chứa docker-compose.yml
-            echo "Pulling latest image..."
-            docker-compose pull # Kéo image mới nhất từ Docker Hub [11]
-            echo "Stopping old container (if running)..."
-            docker-compose down # Dừng và xóa container cũ [4]
-            echo "Starting new container..."
-            docker-compose up -d # Khởi chạy container mới ở chế độ nền [2, 4, 12]
-            echo "Deployment complete!"
+          echo "SSM Command ID: $COMMAND_ID. Waiting for command to complete..."
+          
+          
+          aws ssm wait command-executed --command-id $COMMAND_ID --instance-id ${{ secrets.EC2_INSTANCE_ID }} --region ${{ secrets.AWS_REGION }}
+
+          echo "Checking command status..."
+       
+          aws ssm get-command-invocation --command-id $COMMAND_ID --instance-id ${{ secrets.EC2_INSTANCE_ID }} --query "StandardErrorContent" --output text
+          STATUS=$(aws ssm get-command-invocation --command-id $COMMAND_ID --instance-id ${{ secrets.EC2_INSTANCE_ID }} --query "Status" --output text)
+          echo "SSM Command Status: $STATUS"
+          if [ "$STATUS" != "Success" ]; then
+             echo "SSM command failed!"
+             exit 1
+          fi
+          echo "Deployment via SSM completed successfully!"
+
