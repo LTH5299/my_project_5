@@ -13,7 +13,7 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Build Docker image
-        run: docker build -t yourdockerhub/cd_docker_project:latest .
+        run: docker build -t thanhhien52/cd_docker_project:latest .
 
       - name: Log in to Docker Hub
         run: echo '${{ secrets.DOCKER_PASSWORD }}' | docker login -u '${{ secrets.DOCKER_USERNAME }}' --password-stdin
