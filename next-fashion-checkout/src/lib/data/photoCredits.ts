@@ -1,0 +1,10 @@
+// Nguồn ảnh minh họa: Wikimedia Commons, giấy phép cho phép dùng thương mại.
+// Giấy phép CC BY / CC BY-SA bắt buộc ghi tác giả, giấy phép, đường dẫn và nêu rõ thay đổi.
+export const PHOTO_CREDITS = [
+  { image: "oxford-shirt", author: "julija.mazhora", license: "CC BY 2.0", licenseUrl: "https://creativecommons.org/licenses/by/2.0/", page: "https://commons.wikimedia.org/wiki/File:Woman_in_white_shirt_and_black_trousers.jpg", changes: { vi: "cắt khung", en: "cropped" } },
+  { image: "linen-dress", author: "Hunt Museum and Inés Rivilla López", license: "CC BY-SA 4.0", licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0/", page: "https://commons.wikimedia.org/wiki/File:Grey_Linen_Pleated_Dress_designed_by_Sybil_Connolly_-_Full_Length_Front.jpg", changes: { vi: "cắt khung", en: "cropped" } },
+  { image: "blazer", author: "Shixart1985", license: "CC BY 2.0", licenseUrl: "https://creativecommons.org/licenses/by/2.0/", page: "https://commons.wikimedia.org/wiki/File:Elegant_woman_in_black_blazer_and_white_shirt_standing_against_a_stone_wall_in_a_city_setting.jpg", changes: { vi: "cắt khung", en: "cropped" } },
+  { image: "chinos", author: "Menswear Market", license: "CC BY 2.0", licenseUrl: "https://creativecommons.org/licenses/by/2.0/", page: "https://commons.wikimedia.org/wiki/File:Chino_Pant_Stack.jpg", changes: { vi: "cắt khung", en: "cropped" } },
+  { image: "canvas-tote", author: "Tom Beatty", license: "CC BY 2.0", licenseUrl: "https://creativecommons.org/licenses/by/2.0/", page: "https://commons.wikimedia.org/wiki/File:Canvas_two-tone_tote_Navy_and_Natural7_(9038437258).jpg", changes: { vi: "cắt khung, xóa nhãn hiệu", en: "cropped, maker label removed" } },
+  { image: "wool-coat", author: "Marko Arolinna", license: "CC BY 4.0", licenseUrl: "https://creativecommons.org/licenses/by/4.0/", page: "https://commons.wikimedia.org/wiki/File:Women%27s_fashion_in_the_1950%27s_long_coat_1954_(JOKAUAS2_1D-6).tif", changes: { vi: "cắt khung", en: "cropped" } },
+] as const;
