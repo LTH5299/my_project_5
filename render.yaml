@@ -1,0 +1,27 @@
+# Cấu hình triển khai bản demo Next Fashion lên Render (https://render.com).
+# Render đọc tệp này khi tạo "Blueprint" từ repo GitHub.
+services:
+  - type: web
+    name: next-fashion-checkout
+    runtime: node
+    plan: free
+    rootDir: next-fashion-checkout
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/catalog
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Bản demo: SePay giả lập, bật trang /dev để người xem tự thử chuyển khoản
+      - key: SEPAY_MODE
+        value: mock
+      - key: ENABLE_DEV_TOOLS
+        value: "true"
+      - key: NEXT_PUBLIC_ENABLE_DEV_TOOLS
+        value: "true"
+      - key: SEPAY_WEBHOOK_KEY
+        generateValue: true
+      - key: NEXT_PUBLIC_HOTLINE
+        value: "1900 0000"
+      - key: NEXT_PUBLIC_ZALO_URL
+        value: https://zalo.me/

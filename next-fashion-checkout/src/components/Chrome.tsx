@@ -21,7 +21,7 @@ export function LangSwitch() {
 export function TopBar({ mode = "shop" }: { mode?: "shop" | "checkout" }) {
   const { L, lang } = useLang();
   const { count } = useCart();
-  const dev = process.env.NODE_ENV !== "production";
+  const dev = process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_ENABLE_DEV_TOOLS === "true";
   return (
     <>
       {dev && (
