@@ -25,6 +25,8 @@ Mở http://localhost:3000. Các trang chính:
 
 Thư mục dự án nằm trong OneDrive. Nếu `npm run dev` báo `EINVAL: invalid argument, readlink ... .next`, xóa thư mục `.next` rồi chạy lại.
 
+Đưa web lên mạng để gửi cho người khác (Render, link cố định): [TRIEN-KHAI.md](TRIEN-KHAI.md).
+
 Hướng dẫn tự sửa web cho người không lập trình (ảnh, sản phẩm, chữ, màu, thông tin liên hệ): [HUONG-DAN-TU-SUA.md](HUONG-DAN-TU-SUA.md).
 
 Kiểm thử tự động: `npm test` (33 ca, bám theo AC của US-07 và US-11 cùng các ngoại lệ trong UC-01).
