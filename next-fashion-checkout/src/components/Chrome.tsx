@@ -3,10 +3,24 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { fmt, useLang } from "@/lib/i18n/client";
 import { formatVnd } from "@/lib/money";
-import { FREE_SHIPPING_THRESHOLD } from "@/lib/data/locations";
 import { PHOTO_CREDITS } from "@/lib/data/photoCredits";
 import { useCart } from "@/lib/cart";
 import { BagIcon, LockIcon } from "./Icons";
+import type { PublicSettings } from "@/lib/api";
+
+export const DEV_TOOLS = process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_ENABLE_DEV_TOOLS === "true";
+
+type Catalog = { products: { image?: string }[]; settings: PublicSettings };
+let catalogPromise: Promise<Catalog> | null = null;
+// Một lần tải danh mục cho thanh thông báo và ghi nguồn ảnh
+export function useCatalogMeta() {
+  const [data, setData] = useState<Catalog | null>(null);
+  useEffect(() => {
+    catalogPromise ??= fetch("/api/catalog").then((r) => r.json());
+    catalogPromise.then(setData).catch(() => { catalogPromise = null; });
+  }, []);
+  return data;
+}
 
 export function LangSwitch() {
   const { lang, setLang, L } = useLang();
@@ -21,21 +35,22 @@ export function LangSwitch() {
 export function TopBar({ mode = "shop" }: { mode?: "shop" | "checkout" }) {
   const { L, lang } = useLang();
   const { count } = useCart();
-  const dev = process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_ENABLE_DEV_TOOLS === "true";
+  const meta = useCatalogMeta();
   return (
     <>
-      {dev && (
+      {DEV_TOOLS && (
         <div className="devbar">
           <div className="container">
             <span>{L.dev.banner}</span>
             <Link href="/dev">{L.dev.openSimulator}</Link>
+            <Link href="/admin">{L.nav.internal}</Link>
           </div>
         </div>
       )}
       {mode === "shop" && (
         <div className="announce">
           <div className="container">
-            <span>{fmt(L.announce.freeShip, { amount: formatVnd(FREE_SHIPPING_THRESHOLD, lang) })}</span>
+            <span>{meta ? fmt(L.announce.freeShip, { amount: formatVnd(meta.settings.freeshipThreshold, lang) }) : " "}</span>
             <span className="extra">{L.announce.payment}</span>
           </div>
         </div>
@@ -58,10 +73,13 @@ export function TopBar({ mode = "shop" }: { mode?: "shop" | "checkout" }) {
             {mode === "checkout" ? (
               <span className="secure"><LockIcon /><span>{L.nav.secure}</span></span>
             ) : (
-              <Link href="/cart" className="cart-link" aria-label={`${L.nav.cart}${count ? ` (${count})` : ""}`}>
-                <BagIcon /><span className="cart-label">{L.nav.cart}</span>
-                {count > 0 && <span className="cart-count" aria-hidden="true">{count}</span>}
-              </Link>
+              <>
+                <Link href="/orders" className="nav-link hide-sm">{L.nav.myOrders}</Link>
+                <Link href="/cart" className="cart-link" aria-label={`${L.nav.cart}${count ? ` (${count})` : ""}`}>
+                  <BagIcon /><span className="cart-label">{L.nav.cart}</span>
+                  {count > 0 && <span className="cart-count" aria-hidden="true">{count}</span>}
+                </Link>
+              </>
             )}
             <LangSwitch />
           </div>
@@ -73,17 +91,10 @@ export function TopBar({ mode = "shop" }: { mode?: "shop" | "checkout" }) {
 
 const HOTLINE = process.env.NEXT_PUBLIC_HOTLINE ?? "1900 0000";
 
-function useImagesInUse() {
-  const [images, setImages] = useState<string[] | null>(null);
-  useEffect(() => {
-    fetch("/api/catalog").then((r) => r.json()).then((d) => setImages(d.products.map((p: { image?: string }) => p.image ?? ""))).catch(() => setImages(null));
-  }, []);
-  return images;
-}
-
 export function Footer({ slim = false }: { slim?: boolean }) {
   const { L, lang } = useLang();
-  const inUse = useImagesInUse();
+  const meta = useCatalogMeta();
+  const inUse = meta?.products.map((p) => p.image ?? "");
   // Chỉ ghi nguồn cho ảnh minh họa còn đang dùng; ảnh shop tự chụp không cần ghi
   const credits = PHOTO_CREDITS.filter((c) => !inUse || inUse.includes(`/products/${c.image}.jpg`));
   const policies = (
@@ -114,6 +125,7 @@ export function Footer({ slim = false }: { slim?: boolean }) {
           <h2>{L.footer.help}</h2>
           <ul>
             <li><a href={`tel:${HOTLINE.replace(/\s/g, "")}`}>{fmt(L.order.hotline, { phone: HOTLINE })}</a></li>
+            <li><Link href="/orders">{L.nav.lookup}</Link></li>
             <li><a href="/help/payment">{L.footer.faq}</a></li>
           </ul>
         </div>
@@ -155,20 +167,12 @@ export function Thumb({ swatch, image, qty, label }: { swatch: string; image?: s
   );
 }
 
-export function Stepper({ current }: { current: 0 | 1 | 2 | 3 | 4 }) {
+export function CopyButton({ text }: { text: string }) {
   const { L } = useLang();
-  const steps = [L.steps.cart, L.steps.info, L.steps.shipping, L.steps.payment, L.steps.review];
+  const [done, setDone] = useState(false);
   return (
-    <ol className="stepper" aria-label="Các bước thanh toán">
-      {steps.map((s, i) => {
-        const state = i < current ? "done" : i === current ? "current" : "todo";
-        const inner = (<><span className="dot">{i + 1}</span><span className="label">{s}</span></>);
-        return (
-          <li key={s} data-state={state} aria-current={state === "current" ? "step" : undefined}>
-            {i === 0 ? <Link href="/cart">{inner}</Link> : inner}
-          </li>
-        );
-      })}
-    </ol>
+    <button type="button" className="copy-btn" data-copied={done} onClick={async () => {
+      try { await navigator.clipboard.writeText(text); setDone(true); setTimeout(() => setDone(false), 1600); } catch { /* trình duyệt chặn */ }
+    }}>{done ? L.pay.copied : L.pay.copy}</button>
   );
 }

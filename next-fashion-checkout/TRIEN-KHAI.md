@@ -29,14 +29,16 @@ Gửi link đó cho người xem. Các trang chính:
 | --- | --- |
 | Cửa hàng | `/` |
 | Thanh toán | `/checkout` |
-| Giả lập chuyển khoản SePay, hộp thư email, tồn kho | `/dev` |
+| Tra cứu đơn, Đơn của tôi | `/orders` |
+| Bảng giả lập: SePay, GHN, Viettel Post, hộp thư email, tồn kho | `/dev` |
+| Màn hình nội bộ: CSKH, Kho, Kế toán, nhật ký, cấu hình | `/admin` |
 | Thay ảnh sản phẩm | `/dev/images` |
 
 ### Cần biết về bản miễn phí
 
 - Không có ai truy cập trong 15 phút thì web tạm ngủ. Lần mở sau chờ khoảng 30–60 giây để web thức dậy. Trước buổi demo, mở link trước vài phút.
 - Đơn hàng thử, ảnh tải lên qua `/dev/images` và dữ liệu đã sửa sẽ mất mỗi khi Render khởi động lại hoặc build lại. Web tự quay về dữ liệu mẫu.
-- Trang `/dev` đang bật để người xem tự thử luồng SePay. Ai có link cũng vào được trang này, nên đây chỉ là bản demo, không dùng để bán hàng thật.
+- Trang `/dev` và `/admin` đang bật để người xem tự thử luồng SePay, vận đơn và màn hình nội bộ. Ai có link cũng vào được trang này, nên đây chỉ là bản demo, không dùng để bán hàng thật.
 - Mỗi lần merge code mới vào `main`, Render tự build lại.
 
 ### Khi muốn bán hàng thật
@@ -46,7 +48,9 @@ Cần làm thêm trước khi mở cho khách:
 1. Thay kho dữ liệu file JSON bằng cơ sở dữ liệu (PostgreSQL), đặt job hủy đơn quá hạn chạy riêng.
 2. Tắt `/dev`: đặt `ENABLE_DEV_TOOLS` và `NEXT_PUBLIC_ENABLE_DEV_TOOLS` thành `false`.
 3. Đặt `SEPAY_MODE=live`, điền tài khoản nhận tiền thật, cấu hình webhook SePay trỏ về `https://<tên miền>/api/webhooks/sepay` với đúng `SEPAY_WEBHOOK_KEY` (xem trong tab Environment của Render).
-4. Gắn tên miền riêng (Render: Settings, Custom Domains) và chuyển sang gói trả phí để web không ngủ.
+4. Ký hợp đồng API với GHN và Viettel Post, thay phần giả lập trong `src/lib/shipping.ts` bằng lời gọi thật; cấu hình webhook GHN về `https://<tên miền>/api/webhooks/ghn/<GHN_WEBHOOK_SECRET>` và webhook Viettel Post về `https://<tên miền>/api/webhooks/vtp` (gửi `TOKEN` = `VTP_WEBHOOK_TOKEN`).
+5. Đặt `/admin` sau đăng nhập nhân viên và phân quyền CSKH, Kho, Kế toán.
+6. Gắn tên miền riêng (Render: Settings, Custom Domains) và chuyển sang gói trả phí để web không ngủ.
 
 ## Cách 2: Chia sẻ tạm từ máy đang chạy
 

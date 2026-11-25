@@ -106,10 +106,11 @@ Khởi động lại `npm run dev` sau khi sửa tệp này.
 
 ## 6. Mã giảm giá, phí vận chuyển
 
-- Mã giảm giá mẫu: `src/lib/data/coupons.ts`.
-- Bảng phí ship theo vùng và ngưỡng miễn phí: `src/lib/data/locations.ts` (`SHIPPING_ZONES`, `FREE_SHIPPING_THRESHOLD`).
+- Mã giảm giá mẫu (bộ mã kiểm thử SRS v1.2 mục III.4): `src/lib/data/coupons.ts`, hàm `seedCoupons`.
+- Trần COD, trần tự xác nhận, ngưỡng freeship, thuế suất GTGT, thời gian giữ hàng: sửa ngay trên web ở `/admin`, tab **Cấu hình**. Giá trị mặc định nằm trong `src/lib/data/coupons.ts`, hàm `defaultSettings`.
+- Phí vận chuyển: bản demo giả lập biểu phí GHN và Viettel Post trong `src/lib/shipping.ts` (mảng `SERVICES`). Bản thật lấy phí trực tiếp từ API của hai hãng.
 
-Bản chạy thật sẽ lấy hai phần này từ Site quản trị. Các tệp trên chỉ để thử luồng.
+Bản chạy thật sẽ lấy mã giảm giá từ Site quản trị. Các tệp trên chỉ để thử luồng.
 
 ## 7. Kiểm tra trước khi giao cho đội Dev
 

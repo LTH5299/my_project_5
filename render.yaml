@@ -12,7 +12,7 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
-      # Bản demo: SePay giả lập, bật trang /dev để người xem tự thử chuyển khoản
+      # Bản demo: SePay, GHN, Viettel Post giả lập; bật /dev và /admin để người xem tự thử
       - key: SEPAY_MODE
         value: mock
       - key: ENABLE_DEV_TOOLS
@@ -20,6 +20,10 @@ services:
       - key: NEXT_PUBLIC_ENABLE_DEV_TOOLS
         value: "true"
       - key: SEPAY_WEBHOOK_KEY
+        generateValue: true
+      - key: GHN_WEBHOOK_SECRET
+        generateValue: true
+      - key: VTP_WEBHOOK_TOKEN
         generateValue: true
       - key: NEXT_PUBLIC_HOTLINE
         value: "1900 0000"

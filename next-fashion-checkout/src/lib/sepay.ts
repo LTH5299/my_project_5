@@ -1,8 +1,3 @@
-import type { SepayInfo } from "./types";
-import { db } from "./store";
-
-export const PAYMENT_WINDOW_MS = 15 * 60 * 1000; // REQ-A7.4.2: hạn thanh toán 15 phút tính từ lúc tạo QR
-
 export function sepayConfig() {
   return {
     mode: (process.env.SEPAY_MODE ?? "mock") as "mock" | "live",
@@ -37,29 +32,18 @@ export function buildVietQrPayload(o: { bin: string; account: string; amount: nu
   return body + crc16ccitt(body);
 }
 
-export class SepayError extends Error {}
-
-// Yêu cầu SePay tạo mã QR động: số tiền = Tổng thanh toán, nội dung = mã đơn.
-export async function createDynamicQr(orderCode: string, amount: number, now = new Date()): Promise<SepayInfo> {
+// Thông tin chuyển khoản của phiên NFP (SCR-07): nội dung CK = mã phiên, số tiền = Tổng thanh toán
+export function transferInfo(sessionCode: string, amount: number) {
   const cfg = sepayConfig();
-  const store = db();
-  if (store.settings.sepayFailNext) {
-    store.settings.sepayFailNext = false; // công cụ giả lập: lỗi một lần
-    throw new SepayError("SePay không phản hồi");
-  }
-  const base = {
-    bankName: cfg.bankName, bankCode: cfg.bankCode, accountNumber: cfg.accountNumber, accountName: cfg.accountName,
-    amount, content: orderCode, createdAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + PAYMENT_WINDOW_MS).toISOString(),
-  };
+  const base = { bankName: cfg.bankName, bankCode: cfg.bankCode, accountNumber: cfg.accountNumber, accountName: cfg.accountName, amount, content: sessionCode };
   if (cfg.mode === "live") {
     const url = new URL("https://qr.sepay.vn/img");
     url.searchParams.set("acc", cfg.accountNumber);
     url.searchParams.set("bank", cfg.bankCode);
     url.searchParams.set("amount", String(amount));
-    url.searchParams.set("des", orderCode);
+    url.searchParams.set("des", sessionCode);
     url.searchParams.set("template", "compact");
     return { ...base, qrImageUrl: url.toString() };
   }
-  return { ...base, qrPayload: buildVietQrPayload({ bin: cfg.bankBin, account: cfg.accountNumber, amount, content: orderCode }) };
+  return { ...base, qrPayload: buildVietQrPayload({ bin: cfg.bankBin, account: cfg.accountNumber, amount, content: sessionCode }) };
 }
