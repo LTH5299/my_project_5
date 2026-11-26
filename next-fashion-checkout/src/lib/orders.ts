@@ -1,217 +1,389 @@
 import crypto from "node:crypto";
-import type { CartItem, Lang, Order, PaymentMethod } from "./types";
+import type { Address, Carrier, Customer, Lang, Order, OrderLine, OrderStatus, PaymentSession, ShippingPackage } from "./types";
 import { db, findVariant, save } from "./store";
-import { computeQuote, type CatalogLookup, type CouponError, type Quote } from "./pricing";
-import { normalizePhone, validateContact, type ContactInput, type FieldError } from "./validation";
 import { findProvince, findWard } from "./data/locations";
-import { createDynamicQr } from "./sepay";
-import { enqueueMail, retryFailedMails } from "./mail";
+import { validateContact, normalizePhone, type FieldError } from "./validation";
+import { quoteCheckout, diffSeen, type Change, type SeenMoney } from "./quote";
+import { cancelWaybill, createWaybill, mapGhnStatus, mapVtpStatus, quoteShipping, STATUS_RANK } from "./shipping";
+import { retryFailedMails, sendMail } from "./mail";
+import { logCall } from "./log";
+import type { QuoteLine } from "./pricing";
 
-export const MAX_PENDING_PER_PHONE = 3; // REQ-A7.5.4 (đề xuất)
+const ALPHA = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const rand = (n: number) => Array.from(crypto.randomBytes(n), (b) => ALPHA[b % ALPHA.length]).join("");
+const token = () => crypto.randomBytes(16).toString("hex");
+const iso = (d: Date) => d.toISOString();
 
-export function lookup(): CatalogLookup {
+function uniqueCode(prefix: "NF" | "NFP") {
   const store = db();
-  return { findVariant, coupons: store.coupons, couponUsage: store.couponUsage };
+  for (;;) {
+    const c = prefix + rand(8);
+    if (!store.orders.some((o) => o.code === c) && !store.sessions.some((s) => s.code === c)) return c;
+  }
 }
 
-export function quote(input: Parameters<typeof computeQuote>[0]): Quote {
-  sweep();
-  return computeQuote(input, lookup());
-}
-
-export interface PlaceOrderInput {
-  idempotencyKey: string;
-  items: CartItem[];
-  contact: ContactInput;
+// ---------- Đặt hàng (UC-05 / UC-06) ----------
+export interface CheckoutInput {
+  items: { variantId: string; qty: number }[];
+  customer: Customer;
+  address: { provinceId: string; wardId: string; line: string };
+  note?: string;
+  pkgId: string;
   couponCode?: string;
-  method?: PaymentMethod;
-  agreedTerms: boolean;
+  method: "cod" | "sepay";
   lang: Lang;
+  idempotencyKey: string;
   memberId?: string;
-  expected: { total: number; shippingFee: number; discount: number; lines: { variantId: string; price: number; qty: number }[] };
+  saveProfile?: boolean;
+  agreed: boolean;
+  seen: SeenMoney;
 }
 
-export type Change =
-  | { type: "price"; variantId: string; name: string; oldPrice: number; newPrice: number }
-  | { type: "qty_reduced"; variantId: string; name: string; oldQty: number; newQty: number }
-  | { type: "coupon_invalid"; code: string; error: CouponError; shortfall?: number }
-  | { type: "shipping"; oldFee: number; newFee: number }
-  | { type: "total"; oldTotal: number; newTotal: number };
+export type CheckoutResult =
+  | { status: "order"; code: string; token: string }
+  | { status: "session"; code: string; token: string }
+  | { status: "invalid"; errors: Partial<Record<string, FieldError>> }
+  | { status: "changed"; changes: Change[] }
+  | { status: "error"; error: "empty" | "terms" | "cod_over_cap" | "cod_pending_limit" | "sepay_unavailable" | "no_package" | "unserved" };
 
-export type PlaceOrderResult =
-  | { ok: true; order: Order; duplicate?: boolean }
-  | { ok: false; error: "validation"; fields: Partial<Record<keyof ContactInput, FieldError>> }
-  | { ok: false; error: "terms_required" | "method_required" | "cod_not_allowed" | "shipping_unsupported" | "empty_cart" | "pending_limit" | "sepay_error" }
-  | { ok: false; error: "out_of_stock"; variants: { variantId: string; name: string }[] }
-  | { ok: false; error: "changed"; changes: Change[] };
+const toLines = (lines: QuoteLine[]): OrderLine[] =>
+  lines.filter((l) => l.qty > 0).map((l) => ({
+    variantId: l.variantId, productId: l.productId, sku: l.sku, name: l.name, color: l.color, size: l.size,
+    swatch: l.swatch, image: l.image, price: l.price, qty: l.qty, weightGrams: l.weightGrams,
+  }));
 
-function nextOrderCode(now: Date) {
-  const store = db();
-  // yymmdd theo giờ Việt Nam (UTC+7)
-  const d = new Date(now.getTime() + 7 * 3600 * 1000).toISOString().slice(2, 10).replace(/-/g, "");
-  store.orderSeq[d] = (store.orderSeq[d] ?? 0) + 1;
-  // Chỉ gồm chữ không dấu và số để ngân hàng không cắt nội dung chuyển khoản
-  return `NF${d}${String(store.orderSeq[d]).padStart(4, "0")}`;
-}
-
-function restoreStock(order: Order) {
-  for (const it of order.items) {
+function moveStock(items: OrderLine[], sign: 1 | -1) {
+  for (const it of items) {
     const f = findVariant(it.variantId);
-    if (f) f.variant.stock += it.qty;
+    if (f) f.variant.stock += sign * it.qty;
   }
-  for (const u of db().couponUsage) if (u.orderCode === order.code) u.active = false;
 }
 
-export async function placeOrder(input: PlaceOrderInput, now = new Date()): Promise<PlaceOrderResult> {
-  sweep(now);
+const pendingCodCount = (phone: string) =>
+  db().orders.filter((o) => o.method === "cod" && o.status === "pending_confirmation" && o.customer.phone === phone).length;
+
+export function submitCheckout(input: CheckoutInput, now = new Date()): CheckoutResult {
   const store = db();
+  const s = store.settings;
+  tick(now);
 
-  // Bấm nhiều lần / mạng chậm: cùng một khóa chỉ tạo một đơn
-  const existing = store.orders.find((o) => o.idempotencyKey === input.idempotencyKey && o.status !== "canceled_qr_error");
-  if (existing) return { ok: true, order: existing, duplicate: true };
+  // Bấm nhiều lần / mạng chập chờn: trả lại đúng kết quả lần đầu
+  const dupOrder = store.orders.find((o) => o.idempotencyKey === input.idempotencyKey);
+  if (dupOrder) return { status: "order", code: dupOrder.code, token: dupOrder.token };
+  const dupSession = store.sessions.find((x) => x.idempotencyKey === input.idempotencyKey && x.status === "pending");
+  if (dupSession) return { status: "session", code: dupSession.code, token: dupSession.token };
 
-  const fields = validateContact(input.contact);
-  if (Object.keys(fields).length) return { ok: false, error: "validation", fields };
-  if (!input.agreedTerms) return { ok: false, error: "terms_required" };
-  if (input.method !== "cod" && input.method !== "sepay") return { ok: false, error: "method_required" };
+  const customer = { name: (input.customer?.name ?? "").trim(), phone: normalizePhone(input.customer?.phone ?? ""), email: (input.customer?.email ?? "").trim() };
+  const errors = validateContact({ ...customer, provinceId: input.address?.provinceId, wardId: input.address?.wardId, line: input.address?.line ?? "", note: input.note ?? "" });
+  if (Object.keys(errors).length) return { status: "invalid", errors };
+  if (!input.agreed) return { status: "error", error: "terms" };
 
-  const phone = normalizePhone(input.contact.phone);
-  const email = input.contact.email.trim().toLowerCase();
-
-  // ---- Từ đây đến lúc trừ tồn chạy đồng bộ: không có yêu cầu nào chen vào giữa ----
-  const q = computeQuote(
-    { items: input.items, provinceId: input.contact.provinceId, wardId: input.contact.wardId, couponCode: input.couponCode, phone, email, now },
-    lookup(),
-  );
-  if (!q.lines.length) return { ok: false, error: "empty_cart" };
-
-  const blocked = q.lines.filter((l) => l.state === "out_of_stock" || l.state === "inactive" || l.state === "missing");
-  if (blocked.length) {
-    return { ok: false, error: "out_of_stock", variants: blocked.map((l) => ({ variantId: l.variantId, name: `${l.name[input.lang]} (${l.color[input.lang]}, ${l.size})` })) };
+  const q = quoteCheckout({ items: input.items, provinceId: input.address.provinceId, wardId: input.address.wardId, pkgId: input.pkgId, couponCode: input.couponCode, phone: customer.phone, email: customer.email, now });
+  if (!q.lines.some((l) => l.qty > 0)) return { status: "error", error: "empty" };
+  if (q.shipping?.status === "unserved") return { status: "error", error: "unserved" };
+  if (!q.pkg || q.pkg.id !== input.pkgId) {
+    // Gói khách chọn không còn: coi là thay đổi phí giao
+    if (q.shipping?.status !== "ok") return { status: "error", error: "no_package" };
   }
-  if (q.shipping.status !== "ok") return { ok: false, error: "shipping_unsupported" };
+  const changes = q.blocking ? [{ kind: "stock" as const, step: 0 as const }] : diffSeen(q, input.seen, input.couponCode);
+  if (q.pkg && q.pkg.id !== input.pkgId && !changes.some((c) => c.kind === "shipping")) changes.push({ kind: "shipping", step: 2 });
+  if (changes.length) return { status: "changed", changes };
 
-  // Kiểm tra lại giá, số lượng, mã giảm giá và phí ship tại thời điểm bấm (REQ-A7.5.2)
-  const changes: Change[] = [];
-  for (const exp of input.expected.lines) {
-    const cur = q.lines.find((l) => l.variantId === exp.variantId);
-    if (!cur) continue;
-    const name = `${cur.name[input.lang]} (${cur.color[input.lang]}, ${cur.size})`;
-    if (cur.price !== exp.price) changes.push({ type: "price", variantId: cur.variantId, name, oldPrice: exp.price, newPrice: cur.price });
-    if (cur.qty < exp.qty) changes.push({ type: "qty_reduced", variantId: cur.variantId, name, oldQty: exp.qty, newQty: cur.qty });
-  }
-  if (q.coupon?.status === "invalid") changes.push({ type: "coupon_invalid", code: q.coupon.code, error: q.coupon.error, shortfall: q.coupon.shortfall });
-  if (q.shipping.fee !== input.expected.shippingFee) changes.push({ type: "shipping", oldFee: input.expected.shippingFee, newFee: q.shipping.fee });
-  if (q.total !== input.expected.total) changes.push({ type: "total", oldTotal: input.expected.total, newTotal: q.total });
-  if (changes.length) return { ok: false, error: "changed", changes };
-
-  if (input.method === "cod" && !q.codAllowed) return { ok: false, error: "cod_not_allowed" };
-
-  const pending = store.orders.filter(
-    (o) => o.customer.phone === phone && (o.status === "pending_confirmation" || o.status === "awaiting_payment"),
-  ).length;
-  if (pending >= MAX_PENDING_PER_PHONE) return { ok: false, error: "pending_limit" };
-
-  const province = findProvince(input.contact.provinceId)!;
-  const ward = findWard(input.contact.provinceId, input.contact.wardId)!;
-  const code = nextOrderCode(now);
-  const at = now.toISOString();
-  const order: Order = {
-    code,
-    token: crypto.randomBytes(16).toString("hex"),
-    lang: input.lang,
-    createdAt: at,
-    memberId: input.memberId,
-    customer: { name: input.contact.name.trim(), phone, email },
-    address: { provinceId: province.id, wardId: ward.id, provinceName: province.name, wardName: ward.name, line: input.contact.line.trim() },
-    note: input.contact.note.trim(),
-    items: q.lines.map((l) => ({
-      variantId: l.variantId, productId: l.productId, sku: l.sku, name: l.name, color: l.color, size: l.size, swatch: l.swatch, image: l.image, price: l.price, qty: l.qty,
-    })),
-    subtotal: q.subtotal,
-    discount: q.discount,
-    shippingFee: q.shipping.fee,
-    shippingDiscount: q.shippingDiscount,
-    total: q.total,
-    couponCode: q.coupon?.status === "applied" ? q.coupon.code : undefined,
-    method: input.method,
-    status: input.method === "cod" ? "pending_confirmation" : "awaiting_payment",
-    paymentStatus: input.method === "cod" ? "unpaid" : "awaiting",
-    eta: q.shipping.eta!,
-    timeline: [{ status: input.method === "cod" ? "pending_confirmation" : "awaiting_payment", at }],
-    purchaseTracked: false,
-    idempotencyKey: input.idempotencyKey,
+  const pkg = q.pkg!;
+  const address: Address = {
+    provinceId: input.address.provinceId, wardId: input.address.wardId,
+    provinceName: findProvince(input.address.provinceId)!.name, wardName: findWard(input.address.provinceId, input.address.wardId)!.name,
+    line: input.address.line.trim(),
   };
+  const items = toLines(q.lines);
+  const couponCode = q.coupon?.status === "applied" ? q.coupon.code : undefined;
 
-  // Trừ tồn kho ngay khi tạo đơn (cả COD và SePay) và ghi nhận lượt dùng mã
-  for (const it of order.items) findVariant(it.variantId)!.variant.stock -= it.qty;
-  if (order.couponCode) store.couponUsage.push({ code: order.couponCode, phone, email, orderCode: code, active: true });
-  store.orders.unshift(order);
-  save();
-  // ---- Hết đoạn đồng bộ ----
-
-  if (order.method === "sepay") {
-    try {
-      order.sepay = await createDynamicQr(order.code, order.total, now);
-    } catch {
-      // SePay không tạo được QR: hủy đơn vừa tạo, hoàn tồn và lượt mã, không để đơn treo
-      order.status = "canceled_qr_error";
-      order.paymentStatus = "none";
-      order.timeline.push({ status: "canceled_qr_error", at: new Date().toISOString() });
-      restoreStock(order);
-      save();
-      return { ok: false, error: "sepay_error" };
-    }
+  if (input.memberId && input.saveProfile) {
+    store.savedProfiles[input.memberId] = { ...customer, provinceId: address.provinceId, wardId: address.wardId, line: address.line };
   }
-  enqueueMail(order, "order_confirmed", now);
+
+  if (input.method === "sepay") {
+    if (s.sepayDisabled) return { status: "error", error: "sepay_unavailable" };
+    const session: PaymentSession = {
+      code: uniqueCode("NFP"), token: token(), idempotencyKey: input.idempotencyKey, lang: input.lang, status: "pending",
+      createdAt: iso(now), expiresAt: iso(new Date(now.getTime() + s.sessionMinutes * 60_000)),
+      customer, address, note: (input.note ?? "").trim(), items, money: q.money, couponCode, pkg, memberId: input.memberId,
+    };
+    moveStock(items, -1); // giữ hàng trong thời gian phiên
+    store.sessions.unshift(session);
+    logCall({ partner: "SePay", action: "create-session", http: 200, ms: 40, ref: session.code, note: `${q.money.total}` });
+    save();
+    return { status: "session", code: session.code, token: session.token };
+  }
+
+  // COD
+  if (q.money.total > s.codCap) return { status: "error", error: "cod_over_cap" };
+  if (pendingCodCount(customer.phone) >= 3) return { status: "error", error: "cod_pending_limit" };
+  const blocked = s.blockedPhones.includes(customer.phone);
+  const auto = q.money.total <= s.autoConfirmCap && !blocked;
+  const order = newOrder({ method: "cod", lang: input.lang, customer, address, note: (input.note ?? "").trim(), items, money: q.money, couponCode, pkg, memberId: input.memberId, idempotencyKey: input.idempotencyKey }, now);
+  order.paymentStatus = "cod_unpaid";
+  order.autoConfirmed = auto;
+  order.status = auto ? "packing" : "pending_confirmation";
+  if (!auto) order.confirmReason = blocked ? "blocked_phone" : "cod_over_cap";
+  order.timeline.push({ status: order.status, at: iso(now), note: auto ? "Tự xác nhận" : undefined });
+  moveStock(items, -1);
+  useCoupon(order);
+  store.orders.unshift(order);
+  sendMail(order, "EM-01", "EM-01", now);
+  if (auto) issueWaybill(order, now);
   save();
-  return { ok: true, order };
+  return { status: "order", code: order.code, token: order.token };
 }
 
-export function getOrder(code: string, token: string | null | undefined) {
-  sweep();
-  const o = db().orders.find((x) => x.code === code);
-  // Không đúng mã truy cập thì coi như không có đơn (không tiết lộ đơn có tồn tại)
-  if (!o || !token || o.token !== token || o.status === "canceled_qr_error") return undefined;
+function newOrder(p: { method: "cod" | "sepay"; lang: Lang; customer: Customer; address: Address; note: string; items: OrderLine[]; money: Order["money"]; couponCode?: string; pkg: ShippingPackage; memberId?: string; idempotencyKey: string }, now: Date): Order {
+  return {
+    code: uniqueCode("NF"), token: token(), lang: p.lang, createdAt: iso(now), method: p.method,
+    status: "packing", paymentStatus: "cod_unpaid", autoConfirmed: false, callAttempts: 0, memberId: p.memberId,
+    customer: p.customer, address: p.address, note: p.note, items: p.items, money: p.money, couponCode: p.couponCode,
+    shipment: { carrier: p.pkg.carrier, serviceName: p.pkg.serviceName, quotedFee: p.pkg.fee, etaDate: p.pkg.etaDate, failCount: 0 },
+    timeline: [{ status: "created", at: iso(now) }], purchaseTracked: false, idempotencyKey: p.idempotencyKey,
+  };
+}
+
+function useCoupon(o: Order) {
+  if (!o.couponCode) return;
+  db().couponUsage.push({ code: o.couponCode, phone: o.customer.phone, email: o.customer.email.toLowerCase(), orderCode: o.code, active: true });
+}
+function releaseCoupon(o: Order) {
+  for (const u of db().couponUsage) if (u.orderCode === o.code) u.active = false;
+}
+
+// ---------- Vận đơn tự động (v1.2: tạo ngay khi đơn đủ điều kiện) ----------
+export function issueWaybill(o: Order, now = new Date()) {
+  const s = db().settings;
+  const cod = o.method === "cod" ? o.money.total : 0;
+  const r = createWaybill(o.shipment.carrier, o.code, cod, s.waybillFail);
+  if (!r.ok) {
+    o.shipment.error = r.error;
+    o.shipment.failCount += 1;
+    o.status = "packing";
+    o.timeline.push({ status: "waybill_error", at: iso(now), note: r.error });
+    return false;
+  }
+  o.shipment.trackingCode = r.trackingCode;
+  o.shipment.labelUrl = r.labelUrl;
+  o.shipment.error = undefined;
+  o.status = "awaiting_pickup";
+  o.timeline.push({ status: "waybill", at: iso(now), note: `${o.shipment.carrier} ${r.trackingCode}` });
+  o.timeline.push({ status: "awaiting_pickup", at: iso(now) });
+  sendMail(o, "EM-03", "EM-03", now);
+  return true;
+}
+
+// Admin: "Sửa & tạo lại" hoặc đổi ĐVVC (lấy gói rẻ nhất của hãng mới)
+export function retryWaybill(code: string, carrier?: Carrier, now = new Date()) {
+  const o = findOrder(code);
+  if (!o || o.status !== "packing" || !o.shipment.error) return { ok: false as const, error: "not_retryable" };
+  if (carrier && carrier !== o.shipment.carrier) {
+    const grams = o.items.reduce((t, i) => t + i.weightGrams * i.qty, 0);
+    const pkg = quoteShipping(o.address.provinceId, o.address.wardId, grams, db().settings, now).packages.find((p) => p.carrier === carrier);
+    if (!pkg) return { ok: false as const, error: "carrier_unavailable" };
+    o.shipment.carrier = pkg.carrier; o.shipment.serviceName = pkg.serviceName; o.shipment.etaDate = pkg.etaDate; o.shipment.actualFee = pkg.fee;
+  }
+  const ok = issueWaybill(o, now);
+  save();
+  return ok ? { ok: true as const } : { ok: false as const, error: o.shipment.error };
+}
+
+// ---------- Phiên SePay ----------
+export function findSession(code: string) {
+  return db().sessions.find((x) => x.code === code.toUpperCase());
+}
+
+// Tạo đơn "Đã thanh toán" từ phiên (hàng đã giữ sẵn khi phiên còn chờ)
+export function orderFromSession(x: PaymentSession, transactionId: string, now: Date, stockHeld: boolean): Order {
+  const store = db();
+  const o = newOrder({ method: "sepay", lang: x.lang, customer: x.customer, address: x.address, note: x.note, items: x.items, money: x.money, couponCode: x.couponCode, pkg: x.pkg, memberId: x.memberId, idempotencyKey: "session:" + x.code }, now);
+  o.status = "paid"; o.paymentStatus = "paid"; o.autoConfirmed = true; o.sessionCode = x.code; o.transactionId = transactionId;
+  o.timeline.push({ status: "paid", at: iso(now), note: `GD ${transactionId}` });
+  if (!stockHeld) moveStock(o.items, -1);
+  useCoupon(o);
+  store.orders.unshift(o);
+  x.status = "paid"; x.closedAt = iso(now); x.orderCode = o.code; x.orderToken = o.token; x.transactionId = transactionId;
+  sendMail(o, "EM-02", "EM-02", now);
+  issueWaybill(o, now);
   return o;
 }
 
-export function markPurchaseTracked(code: string, token: string) {
-  const o = getOrder(code, token);
-  if (!o || o.purchaseTracked) return false;
+// "Đổi sang COD": đóng phiên, nhả hàng. Khách quay lại Bước 4 với nháp cũ.
+export function closeSession(code: string, tok: string, now = new Date()) {
+  const x = findSession(code);
+  if (!x || x.token !== tok) return { ok: false as const, error: "not_found" };
+  if (x.status === "paid") return { ok: false as const, error: "paid", orderCode: x.orderCode, orderToken: x.orderToken };
+  if (x.status === "pending") { x.status = "closed"; x.closedAt = iso(now); moveStock(x.items, 1); save(); }
+  return { ok: true as const };
+}
+
+// Hết 15 phút: tra cứu giao dịch SePay một lần cuối, không thấy thì hết hạn (không tạo đơn, không gửi email)
+export function expireSessions(now = new Date()) {
+  const store = db();
+  let changed = false;
+  for (const x of store.sessions) {
+    if (x.status !== "pending" || Date.parse(x.expiresAt) > now.getTime()) continue;
+    logCall({ partner: "SePay", action: "transactions/list", http: 200, ms: 220, ref: x.code, note: "Đối soát cuối phiên" });
+    const tx = store.sepayLedger.find((t) => (t.code === x.code || t.content.toUpperCase().includes(x.code)) && t.amount === x.money.total && !store.processedTransactionIds.includes(t.id));
+    if (tx) {
+      store.processedTransactionIds.push(tx.id);
+      orderFromSession(x, tx.id, now, true);
+    } else {
+      x.status = "expired"; x.closedAt = iso(now);
+      moveStock(x.items, 1);
+    }
+    changed = true;
+  }
+  if (changed) save();
+}
+
+export function tick(now = new Date()) {
+  expireSessions(now);
+  retryFailedMails(now);
+}
+
+// ---------- Tra cứu đơn (UC-09) ----------
+export function findOrder(code: string) {
+  return db().orders.find((o) => o.code === code.trim().toUpperCase());
+}
+export function accessOrder(code: string, by: { token?: string; phone?: string; memberId?: string }) {
+  const o = findOrder(code);
+  if (!o) return undefined;
+  if (by.token && by.token === o.token) return o;
+  if (by.phone && normalizePhone(by.phone) === o.customer.phone) return o;
+  if (by.memberId && by.memberId === o.memberId) return o;
+  return undefined;
+}
+
+// ---------- Hủy đơn (UC-10) ----------
+const CANCELABLE: OrderStatus[] = ["pending_confirmation", "paid", "packing", "awaiting_pickup"];
+
+export function cancelOrder(o: Order, reason: string, by: "customer" | "cskh" | "carrier", now = new Date()) {
+  if (!CANCELABLE.includes(o.status)) return { ok: false as const, error: "not_cancelable" };
+  if (!reason.trim()) return { ok: false as const, error: "reason_required" };
+  if (o.shipment.trackingCode && by !== "carrier") {
+    if (!cancelWaybill(o.shipment.carrier, o.shipment.trackingCode, db().settings.carrierPickedUp)) return { ok: false as const, error: "picked_up" };
+  }
+  finalizeCancel(o, reason.trim(), now);
+  save();
+  return { ok: true as const };
+}
+
+function finalizeCancel(o: Order, reason: string, now: Date) {
+  o.status = "canceled";
+  o.cancelReason = reason;
+  moveStock(o.items, 1);
+  releaseCoupon(o);
+  if (o.paymentStatus === "paid") requestRefund(o, reason, now);
+  o.timeline.push({ status: "canceled", at: iso(now), note: reason });
+  sendMail(o, "EM-05", "EM-05", now, reason);
+}
+
+function requestRefund(o: Order, reason: string, now: Date) {
+  o.paymentStatus = "refund_pending";
+  db().refunds.unshift({ orderCode: o.code, amount: o.money.total, reason, createdAt: iso(now), status: "open" });
+}
+
+export function completeRefund(orderCode: string) {
+  const r = db().refunds.find((x) => x.orderCode === orderCode && x.status === "open");
+  if (!r) return false;
+  r.status = "done"; r.refundRef = "HT" + rand(8);
+  const o = findOrder(orderCode);
+  if (o) o.paymentStatus = "refunded";
+  save();
+  return true;
+}
+
+// ---------- CSKH (ADM-01) ----------
+export function confirmCod(code: string, now = new Date()) {
+  const o = findOrder(code);
+  if (!o || o.status !== "pending_confirmation") return false;
+  o.status = "packing";
+  o.timeline.push({ status: "packing", at: iso(now), note: "CSKH xác nhận" });
+  issueWaybill(o, now);
+  save();
+  return true;
+}
+
+export function recordCall(code: string, now = new Date()) {
+  const o = findOrder(code);
+  if (!o || o.status !== "pending_confirmation") return undefined;
+  o.callAttempts += 1;
+  save();
+  return o.callAttempts;
+}
+
+export function cancelUnreachable(code: string, now = new Date()) {
+  const o = findOrder(code);
+  if (!o || o.status !== "pending_confirmation" || o.callAttempts < 2) return false;
+  return cancelOrder(o, "Không liên lạc được", "cskh", now).ok;
+}
+
+// ---------- Kho (STF-01) ----------
+export const expectedWeight = (o: Order) => o.items.reduce((t, i) => t + i.weightGrams * i.qty, 0);
+
+export function packOrder(code: string, grams: number, now = new Date()) {
+  const o = findOrder(code);
+  if (!o || o.status !== "awaiting_pickup" || !o.shipment.trackingCode) return { ok: false as const, error: "not_packable" };
+  if (!Number.isFinite(grams) || grams <= 0) return { ok: false as const, error: "weight_required" };
+  const exp = expectedWeight(o);
+  const deviation = exp ? Math.abs(grams - exp) / exp : 0;
+  o.packedWeightGrams = Math.round(grams);
+  o.timeline.push({ status: "awaiting_pickup", at: iso(now), note: `Đóng gói xong ${o.packedWeightGrams}g` });
+  save();
+  return { ok: true as const, warn: deviation > 0.3, expected: exp };
+}
+
+// ---------- Webhook ĐVVC (UC-13): chỉ cập nhật theo chiều tiến ----------
+export function handleCarrierEvent(carrier: Carrier, trackingCode: string, raw: string | number, eventId: string, now = new Date(), fee?: number) {
+  const store = db();
+  const key = `${carrier}:${eventId}`;
+  if (store.carrierEvents.includes(key)) return { ok: true, duplicate: true };
+  const o = store.orders.find((x) => x.shipment.trackingCode === trackingCode && x.shipment.carrier === carrier);
+  logCall({ partner: carrier, action: "webhook", http: o ? 200 : 404, ms: 15, ref: trackingCode, note: String(raw) });
+  if (!o) return { ok: false, error: "not_found" };
+  store.carrierEvents.push(key);
+  const next = carrier === "GHN" ? mapGhnStatus(String(raw)) : mapVtpStatus(Number(raw));
+  if (fee) o.shipment.actualFee = fee;
+  if (!next || next === o.status) { save(); return { ok: true, ignored: true }; }
+  const retryDelivery = o.status === "delivery_failed" && next === "shipping";
+  if (!retryDelivery && STATUS_RANK[next] <= STATUS_RANK[o.status]) { save(); return { ok: true, ignored: true }; }
+  if (STATUS_RANK[o.status] >= 6) { save(); return { ok: true, ignored: true }; } // đơn đã kết thúc
+
+  if (next === "canceled") { finalizeCancel(o, "Đơn vị vận chuyển hủy vận đơn", now); save(); return { ok: true }; }
+  o.status = next;
+  o.timeline.push({ status: next, at: iso(now), note: `${carrier} ${raw}` });
+  if (next === "delivered" && o.method === "cod") o.paymentStatus = "cod_reconcile";
+  if (next === "returned") { moveStock(o.items, 1); if (o.paymentStatus === "paid") requestRefund(o, "Hoàn hàng", now); }
+  if (next === "shipping" || next === "delivered" || next === "delivery_failed") {
+    const n = o.timeline.filter((t) => t.status === next).length;
+    sendMail(o, "EM-04", `EM-04:${next}:${n}`, now);
+  }
+  save();
+  return { ok: true };
+}
+
+// Sự kiện Purchase chỉ ghi nhận 1 lần
+export function markPurchaseTracked(code: string, tok: string) {
+  const o = findOrder(code);
+  if (!o || o.token !== tok || o.purchaseTracked) return false;
   o.purchaseTracked = true;
   save();
   return true;
 }
 
-export function cancelForTimeout(o: Order, now: Date) {
-  o.status = "canceled_timeout";
-  o.paymentStatus = "none";
-  o.timeline.push({ status: "canceled_timeout", at: now.toISOString() });
-  restoreStock(o);
-  enqueueMail(o, "canceled_timeout", now);
-}
+export const isCancelable = (o: Order) => CANCELABLE.includes(o.status);
 
-// Hủy các đơn SePay quá 15 phút chưa thanh toán, hoàn tồn kho (REQ-A7.4.2)
-export function sweep(now = new Date()) {
-  let changed = false;
-  for (const o of db().orders) {
-    if (o.status === "awaiting_payment" && o.sepay && now.getTime() >= Date.parse(o.sepay.expiresAt)) {
-      cancelForTimeout(o, now);
-      changed = true;
-    }
-  }
-  if (changed) save();
-  retryFailedMails(now);
-}
-
+// Dữ liệu trả cho trình duyệt: bỏ khóa nội bộ
 export function publicOrder(o: Order) {
-  const { token: _t, idempotencyKey: _k, ...rest } = o;
-  return rest;
+  const { idempotencyKey: _k, ...rest } = o;
+  return { ...rest, cancelable: isCancelable(o), refund: db().refunds.find((r) => r.orderCode === o.code) };
 }
 
-const gs = globalThis as unknown as { __nfSweeper?: NodeJS.Timeout };
-if (typeof window === "undefined" && !gs.__nfSweeper && process.env.NODE_ENV !== "test" && !process.env.VITEST) {
-  gs.__nfSweeper = setInterval(() => { try { sweep(); } catch { /* bỏ qua, lượt sau chạy lại */ } }, 5000);
-  gs.__nfSweeper.unref?.();
+export function publicSession(x: PaymentSession) {
+  const { idempotencyKey: _k, ...rest } = x;
+  return rest;
 }

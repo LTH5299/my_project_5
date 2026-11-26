@@ -5,6 +5,7 @@ import type { Product } from "../types";
 export const SEED_PRODUCTS: Product[] = [
   {
     id: "p-oxford",
+    weightGrams: 300,
     image: "/products/oxford-shirt.jpg",
     name: { vi: "Áo sơ mi Oxford dài tay", en: "Long-sleeve Oxford shirt" },
     category: "nam",
@@ -17,6 +18,7 @@ export const SEED_PRODUCTS: Product[] = [
   },
   {
     id: "p-linen",
+    weightGrams: 350,
     image: "/products/linen-dress.jpg",
     name: { vi: "Đầm linen cổ vuông", en: "Square-neck linen dress" },
     category: "nu",
@@ -29,6 +31,7 @@ export const SEED_PRODUCTS: Product[] = [
   },
   {
     id: "p-blazer",
+    weightGrams: 700,
     image: "/products/blazer.jpg",
     name: { vi: "Áo blazer dáng suông", en: "Relaxed-fit blazer" },
     category: "nu",
@@ -40,6 +43,7 @@ export const SEED_PRODUCTS: Product[] = [
   },
   {
     id: "p-chino",
+    weightGrams: 500,
     image: "/products/chinos.jpg",
     name: { vi: "Quần chino ống đứng", en: "Straight-leg chinos" },
     category: "nam",
@@ -51,6 +55,7 @@ export const SEED_PRODUCTS: Product[] = [
   },
   {
     id: "p-tote",
+    weightGrams: 250,
     image: "/products/canvas-tote.jpg",
     name: { vi: "Túi tote canvas", en: "Canvas tote bag" },
     category: "phu-kien",
@@ -61,6 +66,7 @@ export const SEED_PRODUCTS: Product[] = [
   },
   {
     id: "p-coat",
+    weightGrams: 1200,
     image: "/products/wool-coat.jpg",
     name: { vi: "Áo khoác dạ dáng dài", en: "Long wool coat" },
     category: "nu",
@@ -71,4 +77,4 @@ export const SEED_PRODUCTS: Product[] = [
   },
 ];
 
-export const MAX_QTY_PER_VARIANT = 5; // REQ-A5.2.3: tối đa 5 sản phẩm/biến thể/đơn (đề xuất)
+export const MAX_QTY_PER_VARIANT = 10; // SRS v1.2 SCR-01: tối đa min(tồn, 10) mỗi dòng

@@ -2,14 +2,16 @@ import Link from "next/link";
 
 export const metadata = { title: "Câu hỏi về thanh toán – Next Fashion", description: "Giải đáp về thanh toán COD và chuyển khoản VietQR tại Next Fashion." };
 
-// FAQ thanh toán theo REQ-A8.3.2 (v2.1: SePay/VietQR, hạn 15 phút)
+// FAQ thanh toán theo SRS v1.2: phiên thanh toán NFP giữ hàng 15 phút, đơn chỉ tạo khi tiền về
 const FAQ = [
   ["Next Fashion nhận những hình thức thanh toán nào?", "Bạn có thể trả tiền mặt khi nhận hàng (COD) hoặc chuyển khoản bằng mã VietQR. Đơn trên 5.000.000đ cần chuyển khoản trước."],
-  ["Thanh toán bằng VietQR như thế nào?", "Sau khi đặt hàng, trang đơn hàng hiện mã QR đã điền sẵn số tiền và nội dung là mã đơn. Bạn mở app ngân hàng, quét mã và xác nhận. Hệ thống tự ghi nhận, bạn không cần gửi ảnh chụp."],
-  ["Tôi có bao lâu để chuyển khoản?", "15 phút kể từ lúc mã QR hiện ra. Trang đơn hàng có đồng hồ đếm ngược và ghi rõ giờ hết hạn."],
-  ["Quá 15 phút chưa thanh toán thì sao?", "Đơn tự hủy và sản phẩm được trả lại kho. Bạn có thể bấm Đặt lại đơn này để đặt lại."],
-  ["Tôi đã chuyển tiền nhưng đơn bị hủy, phải làm gì?", "Giao dịch của bạn vẫn được ghi nhận để Kế toán đối chiếu. Bạn gọi hotline hoặc nhắn Zalo, nhân viên CSKH sẽ liên hệ xử lý."],
-  ["Có được sửa số tiền hoặc nội dung chuyển khoản không?", "Bạn vui lòng giữ nguyên. Nếu số tiền hoặc nội dung khác với đơn, hệ thống không thể tự xác nhận."],
+  ["Thanh toán bằng VietQR như thế nào?", "Ở bước Xem lại đơn, bạn bấm Thanh toán để nhận mã QR đã điền sẵn số tiền và nội dung (mã phiên bắt đầu bằng NFP). Mở app ngân hàng, quét mã và xác nhận. Hệ thống tự ghi nhận, bạn không cần gửi ảnh chụp."],
+  ["Khi nào đơn chuyển khoản được tạo?", "Đơn chỉ được tạo sau khi Next Fashion nhận đủ tiền. Trong lúc chờ, sản phẩm được giữ cho bạn 15 phút."],
+  ["Quá 15 phút chưa thanh toán thì sao?", "Phiên thanh toán hết hạn, sản phẩm được trả lại kho và không có đơn nào được tạo. Bạn bấm Thanh toán lại để quay về bước chọn phương thức với thông tin cũ."],
+  ["Tôi đã chuyển tiền nhưng phiên đã hết hạn?", "Đừng chuyển lại. Giao dịch của bạn vẫn được ghi nhận để Kế toán đối soát và liên hệ trong 24 giờ: tạo đơn nếu còn hàng, hoặc hoàn tiền trong 7 ngày làm việc."],
+  ["Có được sửa số tiền hoặc nội dung chuyển khoản không?", "Bạn vui lòng giữ nguyên. Nếu số tiền hoặc nội dung khác, hệ thống không thể tự xác nhận và giao dịch sẽ chuyển sang Kế toán đối soát."],
+  ["Bao giờ tôi có mã vận đơn?", "Ngay khi đơn đủ điều kiện (đã thanh toán, hoặc COD đã xác nhận), shop tự tạo vận đơn GHN hoặc Viettel Post và gửi mã qua email. Bạn tra cứu bằng mã đơn và số điện thoại ở mục Tra cứu đơn."],
+  ["Tôi có hủy đơn được không?", "Được, khi đơn chưa được đơn vị vận chuyển lấy hàng. Mở trang đơn, bấm Hủy đơn và chọn lý do. Đơn đã chuyển khoản sẽ được hoàn tiền trong 7 ngày làm việc."],
 ];
 
 export default function PaymentFaq() {
@@ -23,7 +25,7 @@ export default function PaymentFaq() {
             <p>{a}</p>
           </div>
         ))}
-        <p><Link href="/checkout">Quay lại thanh toán</Link></p>
+        <p><Link href="/orders">Tra cứu đơn hàng</Link> · <Link href="/checkout">Quay lại thanh toán</Link></p>
       </div>
     </main>
   );

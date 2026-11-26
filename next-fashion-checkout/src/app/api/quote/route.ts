@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
-import { quote } from "@/lib/orders";
-import { normalizePhone, validatePhone, validateEmail } from "@/lib/validation";
+import { quoteCheckout, type QuoteInput } from "@/lib/quote";
+import { tick } from "@/lib/orders";
+import { body } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
+// Tính giỏ, báo phí GHN/VTP, áp mã, tách VAT (Bước 2–4)
 export async function POST(req: Request) {
-  const b = await req.json().catch(() => ({}));
-  const phone = b.phone && !validatePhone(b.phone) ? normalizePhone(b.phone) : undefined;
-  const email = b.email && !validateEmail(b.email) ? String(b.email).trim().toLowerCase() : undefined;
-  const q = quote({ items: Array.isArray(b.items) ? b.items : [], provinceId: b.provinceId, wardId: b.wardId, couponCode: b.couponCode, phone, email });
-  return NextResponse.json(q);
+  const b = await body<QuoteInput>(req);
+  tick();
+  return NextResponse.json(quoteCheckout({ ...b, items: Array.isArray(b.items) ? b.items : [], now: undefined }));
 }

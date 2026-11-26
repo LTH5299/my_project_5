@@ -49,3 +49,14 @@ export function clientId() {
     return "anonymous";
   }
 }
+
+// Ghi nhớ các đơn vừa đặt trên máy này để mở lại từ trang "Đơn của tôi"
+export function rememberOrder(code: string, token: string) {
+  try {
+    const list = JSON.parse(localStorage.getItem("nf_my_orders") ?? "[]") as { code: string; token: string }[];
+    localStorage.setItem("nf_my_orders", JSON.stringify([{ code, token }, ...list.filter((x) => x.code !== code)].slice(0, 10)));
+  } catch { /* bỏ qua */ }
+}
+export function recentOrders(): { code: string; token: string }[] {
+  try { return JSON.parse(localStorage.getItem("nf_my_orders") ?? "[]"); } catch { return []; }
+}

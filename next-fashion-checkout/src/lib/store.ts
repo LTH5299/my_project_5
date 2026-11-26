@@ -1,70 +1,73 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { Coupon, CouponUsage, Mail, Order, Product, UnmatchedTransaction } from "./types";
+import type {
+  Coupon, CouponUsage, IntegrationLog, Mail, Order, PaymentSession, Product, ReconItem, RefundRequest, Settings,
+} from "./types";
 import { SEED_PRODUCTS } from "./data/catalog";
-import { SEED_COUPON_USAGE, seedCoupons } from "./data/coupons";
+import { SEED_COUPON_USAGE, defaultSettings, seedCoupons } from "./data/coupons";
 
 export interface DB {
+  version: 3;
   products: Product[];
   coupons: Coupon[];
   couponUsage: CouponUsage[];
+  sessions: PaymentSession[];
   orders: Order[];
-  unmatched: UnmatchedTransaction[];
+  recon: ReconItem[];
+  refunds: RefundRequest[];
   processedTransactionIds: string[];
+  sepayLedger: { id: string; amount: number; content: string; code?: string; at: string }[]; // giao dịch SePay (để API tra cứu)
+  carrierEvents: string[]; // khóa chống trùng webhook ĐVVC
   outbox: Mail[];
+  logs: IntegrationLog[];
   couponFailures: Record<string, { count: number; lockedUntil?: string }>;
-  orderSeq: Record<string, number>;
-  settings: { sepayFailNext: boolean; mailFailNext: boolean };
+  settings: Settings;
+  savedProfiles: Record<string, { name: string; phone: string; email: string; provinceId: string; wardId: string; line: string }>;
 }
 
 function seed(): DB {
   return {
+    version: 3,
     products: structuredClone(SEED_PRODUCTS),
     coupons: seedCoupons(),
     couponUsage: structuredClone(SEED_COUPON_USAGE),
-    orders: [],
-    unmatched: [],
-    processedTransactionIds: [],
-    outbox: [],
-    couponFailures: {},
-    orderSeq: {},
-    settings: { sepayFailNext: false, mailFailNext: false },
+    sessions: [], orders: [], recon: [], refunds: [],
+    processedTransactionIds: [], sepayLedger: [], carrierEvents: [],
+    outbox: [], logs: [], couponFailures: {},
+    settings: defaultSettings(),
+    savedProfiles: {},
   };
 }
 
-// Lưu trữ đơn giản bằng file JSON cho bản chạy thử. Mọi thao tác đọc-kiểm tra-ghi
-// chạy đồng bộ trong một lượt của event loop nên không có hai yêu cầu chen nhau
-// (đây là cách chặn bán vượt tồn trong bản demo; bản thật dùng transaction của CSDL).
-const g = globalThis as unknown as { __nfdb?: DB; __nfdbFile?: string | null };
+// Bản demo lưu bằng file JSON; mọi thao tác đọc-kiểm tra-ghi chạy đồng bộ trong một lượt event loop.
+// Bản thật dùng CSDL có giao tác và khóa dòng tồn kho (NFR-05).
+const g = globalThis as unknown as { __nfdb3?: DB; __nfdbFile3?: string | null };
 
 function dataFile(): string | null {
   if (process.env.NF_DB_MEMORY === "1") return null;
-  return path.join(process.cwd(), ".data", "db.json");
+  return path.join(process.cwd(), ".data", "db-v3.json");
 }
 
 export function db(): DB {
-  if (!g.__nfdb) {
-    g.__nfdbFile = dataFile();
-    if (g.__nfdbFile && fs.existsSync(g.__nfdbFile)) {
-      g.__nfdb = { ...seed(), ...JSON.parse(fs.readFileSync(g.__nfdbFile, "utf8")) };
-    } else {
-      g.__nfdb = seed();
-    }
+  if (!g.__nfdb3) {
+    g.__nfdbFile3 = dataFile();
+    const f = g.__nfdbFile3;
+    g.__nfdb3 = f && fs.existsSync(f) ? { ...seed(), ...JSON.parse(fs.readFileSync(f, "utf8")) } : seed();
   }
-  return g.__nfdb!;
+  return g.__nfdb3!;
 }
 
 export function save() {
-  const file = g.__nfdbFile;
-  if (!file || !g.__nfdb) return;
+  const file = g.__nfdbFile3;
+  if (!file || !g.__nfdb3) return;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(g.__nfdb, null, 1));
+  fs.writeFileSync(tmp, JSON.stringify(g.__nfdb3));
   fs.renameSync(tmp, file);
 }
 
 export function resetDb() {
-  g.__nfdb = seed();
+  g.__nfdb3 = seed();
   save();
 }
 
@@ -74,4 +77,8 @@ export function findVariant(variantId: string) {
     if (v) return { product: p, variant: v };
   }
   return undefined;
+}
+
+export function settings() {
+  return db().settings;
 }

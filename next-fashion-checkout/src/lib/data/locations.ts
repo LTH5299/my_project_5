@@ -1,4 +1,4 @@
-import type { Province, ShippingZone } from "../types";
+import type { Province } from "../types";
 
 // Danh mục địa giới mẫu theo mô hình chính quyền 2 cấp (Tỉnh/Thành – Phường/Xã),
 // áp dụng từ 01/07/2025. Bản chạy thật lấy danh mục đầy đủ từ hãng vận chuyển
@@ -93,7 +93,7 @@ export const PROVINCES: Province[] = [
     ],
   },
   {
-    // Chưa có trong bảng phí: dùng để kiểm thử "Chưa hỗ trợ giao đến khu vực này"
+    // GHN và VTP đều không phục vụ: dùng để kiểm thử MSG-02 "Chưa hỗ trợ giao đến khu vực này"
     id: "lc",
     name: "Tỉnh Lai Châu",
     wards: [
@@ -103,19 +103,9 @@ export const PROVINCES: Province[] = [
   },
 ];
 
-// Bảng phí mẫu do admin cấu hình (REQ-A7.2.1): theo vùng, kèm ngưỡng miễn phí ship.
-export const SHIPPING_ZONES: ShippingZone[] = [
-  { id: "noi-thanh", provinceIds: ["hn", "hcm"], fee: 25000, eta: { vi: "1–2 ngày", en: "1–2 days" } },
-  { id: "vung-2", provinceIds: ["dn", "hp", "ct", "hue", "kh"], fee: 35000, eta: { vi: "2–4 ngày", en: "2–4 days" } },
-];
-export const FREE_SHIPPING_THRESHOLD = 1500000;
-
 export function findProvince(id: string) {
   return PROVINCES.find((p) => p.id === id);
 }
 export function findWard(provinceId: string, wardId: string) {
   return findProvince(provinceId)?.wards.find((w) => w.id === wardId);
-}
-export function findZone(provinceId: string) {
-  return SHIPPING_ZONES.find((z) => z.provinceIds.includes(provinceId));
 }
